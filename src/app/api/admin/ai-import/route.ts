@@ -46,7 +46,7 @@ Your job is to extract structured company records and return ONLY a valid JSON a
 Each object in the array must follow this exact structure:
 {
   "email": string (required, must be a valid email),
-  "name": string (use company name if found, otherwise use the domain name from the email e.g. "acme" from "hr@acme.com", capitalize it),
+  "name": string (use company name if found. If the company name is not found or the domain is not mentioned, label the name as "HR"),
   "category": array of one or more from exactly this list: ["Technology","Finance","Healthcare","Education","Marketing","E-Commerce","Logistics","Media","Real Estate","Manufacturing","Consulting","Other"] — infer from context, default to ["Other"] if unknown,
   "website": string (only if a URL is clearly present, otherwise null),
   "location": string (only if a location is clearly present, otherwise null),
@@ -94,7 +94,7 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body" }, { status: 400 });
   }
 
-  // 4. Call OpenRouter API
+  // 4. Call OpenRouter API — let OpenRouter pick any free model, retry up to 3 times
   const openRouterKey = process.env.OPENROUTER_API_KEY;
   if (!openRouterKey) {
     return NextResponse.json(
@@ -103,19 +103,24 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let geminiText: string;
-  try {
-    const aiRes = await fetch(
-      "https://openrouter.ai/api/v1/chat/completions",
-      {
+  const MAX_ATTEMPTS = 3;
+  let geminiText: string | null = null;
+
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    console.log(`[AI-IMPORT] Attempt ${attempt}/${MAX_ATTEMPTS}`);
+
+    try {
+      const aiRes = await fetch("https://openrouter.ai/api/v1/chat/completions", {
         method: "POST",
         headers: {
-          "Authorization": `Bearer ${openRouterKey}`,
+          Authorization: `Bearer ${openRouterKey}`,
           "Content-Type": "application/json",
-          "HTTP-Referer": "http://localhost:3001",
+          "HTTP-Referer": "https://approach-ten.vercel.app",
+          "X-Title": "Approach AI Import",
         },
         body: JSON.stringify({
-          model: "openrouter/free",
+          model: "openrouter/auto",
+          route: "fallback",
           messages: [
             { role: "system", content: SYSTEM_PROMPT },
             { role: "user", content: rawInput },
@@ -123,31 +128,32 @@ export async function POST(req: NextRequest) {
           temperature: 0.1,
           max_tokens: 8192,
         }),
-      },
-    );
+      });
 
-    if (!aiRes.ok) {
-      const errBody = await aiRes.text().catch(() => "");
-      console.error("[AI-IMPORT] OpenRouter API error:", aiRes.status, errBody);
-      return NextResponse.json(
-        { error: `OpenRouter API returned ${aiRes.status}. Check your OPENROUTER_API_KEY.` },
-        { status: 502 },
-      );
+      if (!aiRes.ok) {
+        console.warn(`[AI-IMPORT] Attempt ${attempt} → HTTP ${aiRes.status}, retrying…`);
+        continue;
+      }
+
+      const aiJson = await aiRes.json();
+      const content: string = aiJson?.choices?.[0]?.message?.content ?? "";
+
+      if (!content.trim()) {
+        console.warn(`[AI-IMPORT] Attempt ${attempt} → empty response, retrying…`);
+        continue;
+      }
+
+      geminiText = content;
+      console.log(`[AI-IMPORT] Success on attempt ${attempt}`);
+      break;
+    } catch (err) {
+      console.error(`[AI-IMPORT] Attempt ${attempt} → network error:`, err);
     }
+  }
 
-    const aiJson = await aiRes.json();
-    geminiText = aiJson?.choices?.[0]?.message?.content ?? "";
-
-    if (!geminiText) {
-      return NextResponse.json(
-        { error: "OpenRouter returned an empty response" },
-        { status: 502 },
-      );
-    }
-  } catch (err) {
-    console.error("[AI-IMPORT] Fetch to OpenRouter failed:", err);
+  if (!geminiText) {
     return NextResponse.json(
-      { error: "Network error calling OpenRouter API. Check your internet connection." },
+      { error: `Failed after ${MAX_ATTEMPTS} attempts. Please try again in a few seconds.` },
       { status: 502 },
     );
   }
