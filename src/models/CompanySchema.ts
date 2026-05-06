@@ -147,4 +147,4 @@ CompanySchema.set("toJSON", {
 const Company: Model<ICompany> =
   mongoose.models.Company || mongoose.model<ICompany>("Company", CompanySchema);
 
-export default Company;git add .
+export default Company;
