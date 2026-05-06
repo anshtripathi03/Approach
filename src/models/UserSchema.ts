@@ -115,11 +115,10 @@ UserSchema.set("toJSON", {
 });
 
 // ─── Export ───────────────────────────────────────────────────────────────────
-if (mongoose.models.User) {
-  delete mongoose.models.User;  // ← force re-register with new schema
-}
-
+// Standard safe singleton pattern — never delete the model, just reuse it if
+// it was already registered (avoids webpack HMR factory-undefined crash).
 const User: Model<IUser> =
-  mongoose.models.User || mongoose.model<IUser>("User", UserSchema);
+  (mongoose.models.User as Model<IUser>) ||
+  mongoose.model<IUser>("User", UserSchema);
 
 export default User;

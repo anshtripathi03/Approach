@@ -244,37 +244,66 @@ export default function AIImportPage() {
 
     const allRecords: ParsedRecord[] = [];
     const allSkipped: SkippedRecord[] = [];
+    const MAX_BATCH_ATTEMPTS = 3;
+    let skippedBatches = 0;
 
     for (let i = 0; i < batches.length; i++) {
       setBatchCurrent(i + 1);
       const batchText = batches[i].join("\n");
+      let batchSuccess = false;
 
-      try {
-        const res = await fetch("/api/admin/ai-import", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ rawInput: batchText }),
-        });
+      for (let attempt = 1; attempt <= MAX_BATCH_ATTEMPTS; attempt++) {
+        try {
+          console.log(`[AI-IMPORT] Batch ${i + 1}/${batches.length} — attempt ${attempt}/${MAX_BATCH_ATTEMPTS}`);
 
-        const data: ParseResponse & { error?: string } = await res.json();
+          const res = await fetch("/api/admin/ai-import", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ rawInput: batchText }),
+          });
 
-        if (!res.ok) {
-          if (res.status === 429) {
-            setParseError(`Rate limited on batch ${i + 1}/${batches.length}. Wait a moment and try again.`);
+          const data: ParseResponse & { error?: string } = await res.json();
+
+          if (!res.ok) {
+            console.warn(`[AI-IMPORT] Batch ${i + 1} attempt ${attempt} failed — HTTP ${res.status}`);
+            if (attempt < MAX_BATCH_ATTEMPTS) {
+              // Wait a bit before retrying (1s, then 2s)
+              await new Promise((r) => setTimeout(r, attempt * 1000));
+              continue;
+            }
+            // All attempts exhausted — skip this batch
             break;
           }
-          setParseError(data.error ?? `AI parsing failed on batch ${i + 1} (HTTP ${res.status})`);
+
+          allRecords.push(...(data.records ?? []));
+          allSkipped.push(...(data.skipped ?? []));
+          batchSuccess = true;
+          break; // success — move to next batch
+        } catch (err) {
+          console.warn(
+            `[AI-IMPORT] Batch ${i + 1} attempt ${attempt} — network error:`,
+            err instanceof Error ? err.message : err
+          );
+          if (attempt < MAX_BATCH_ATTEMPTS) {
+            await new Promise((r) => setTimeout(r, attempt * 1000));
+            continue;
+          }
+          // All attempts exhausted — skip this batch
           break;
         }
-
-        allRecords.push(...(data.records ?? []));
-        allSkipped.push(...(data.skipped ?? []));
-      } catch (err) {
-        setParseError(
-          `Network error on batch ${i + 1}: ${err instanceof Error ? err.message : "Unknown error"}`
-        );
-        break;
       }
+
+      if (!batchSuccess) {
+        skippedBatches++;
+        console.warn(`[AI-IMPORT] Skipping batch ${i + 1}/${batches.length} after ${MAX_BATCH_ATTEMPTS} failed attempts`);
+      }
+    }
+
+    if (skippedBatches > 0) {
+      setParseError(
+        `⚠️ ${skippedBatches} batch${skippedBatches > 1 ? "es" : ""} skipped after ${MAX_BATCH_ATTEMPTS} failed attempts each. ` +
+        `${allRecords.length} records were still imported successfully.`
+      );
     }
 
     dispatch({ type: "SET_ROWS", rows: toRows(allRecords) });
