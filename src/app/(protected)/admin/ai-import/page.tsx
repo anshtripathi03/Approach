@@ -216,9 +216,9 @@ export default function AIImportPage() {
   const [batchCurrent, setBatchCurrent] = useState(0);
   const [batchTotal, setBatchTotal] = useState(0);
 
-  const BATCH_SIZE = 10;
+  const BATCH_SIZE = 25;
 
-  // ── Parse with AI — batched 10 lines at a time ─────────────────────────────
+  // ── Parse with AI — batched 25 lines at a time ─────────────────────────────
   const handleParse = useCallback(async () => {
     if (!rawInput.trim()) return;
 
@@ -262,12 +262,33 @@ export default function AIImportPage() {
             body: JSON.stringify({ rawInput: batchText }),
           });
 
-          const data: ParseResponse & { error?: string } = await res.json();
+          const data: ParseResponse & { error?: string; retryAfterSeconds?: number } = await res.json();
 
           if (!res.ok) {
+            const isRateLimit = res.status === 429 || data.error?.toLowerCase().includes("too many requests");
+            
+            if (isRateLimit) {
+              const waitTime = data.retryAfterSeconds ?? 5;
+              if (attempt < MAX_BATCH_ATTEMPTS) {
+                console.warn(`[AI-IMPORT] Rate limited. Waiting ${waitTime}s before retry ${attempt + 1}...`);
+                await new Promise((r) => setTimeout(r, waitTime * 1000));
+                continue;
+              } else {
+                // All attempts exhausted for rate limit — stop everything as requested
+                setParseError(`Too many requests. Please try again after ${waitTime} seconds.`);
+                // Finalize what we have so far
+                dispatch({ type: "SET_ROWS", rows: toRows(allRecords) });
+                setSkipped(allSkipped);
+                setIsParsing(false);
+                setBatchCurrent(0);
+                setBatchTotal(0);
+                return;
+              }
+            }
+
             console.warn(`[AI-IMPORT] Batch ${i + 1} attempt ${attempt} failed — HTTP ${res.status}`);
             if (attempt < MAX_BATCH_ATTEMPTS) {
-              // Wait a bit before retrying (1s, then 2s)
+              // Wait a bit before retrying (1s, then 2s) for non-rate-limit errors
               await new Promise((r) => setTimeout(r, attempt * 1000));
               continue;
             }
@@ -489,7 +510,7 @@ export default function AIImportPage() {
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 text-center">
-                  Each batch sends 10 emails to AI — please wait
+                  Each batch sends 25 emails to AI — please wait
                 </p>
               </div>
             )}
