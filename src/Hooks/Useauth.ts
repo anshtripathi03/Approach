@@ -6,6 +6,7 @@ import { useAuthStore } from "@/src/store/Authstore";
 import { authService } from "@/src/services/Auth.service";
 import { userService } from "@/src/services/User.service";
 import { RegisterPayload, UpdateCredentialsPayload } from "@/src/types/user.types";
+import { useCompanyStore } from "@/src/store/Companystore";
 
 /**
  * ✅ SIMPLIFIED useAuth Hook
@@ -23,6 +24,8 @@ import { RegisterPayload, UpdateCredentialsPayload } from "@/src/types/user.type
 export function useAuth() {
   const { data: session, status } = useSession();
 
+  const { setNonSentCompanies, setNonSentLoading, setNonSentError } = useCompanyStore();
+
   const {
     user,
     isLoading,
@@ -36,7 +39,7 @@ export function useAuth() {
   // Check if session is authenticated
   const isSessionLoading = status === "loading";
   const isAuthenticated = status === "authenticated";
-  
+
   // Check if user in store is admin
   const isAdmin = user?.role === "admin";
 
@@ -55,12 +58,12 @@ export function useAuth() {
     try {
       console.log("📥 Fetching user profile...");
       const profile = await userService.getProfile();
-      
+
       console.log("✅ Profile loaded:", {
         email: profile.email,
         role: profile.role,
       });
-      
+
       setUser(profile);
       return profile;
     } catch (err: any) {
@@ -71,6 +74,21 @@ export function useAuth() {
       setLoading(false);
     }
   }, [isAuthenticated, setUser, setLoading, setError]);
+
+  const fetchNonSentCompanies = useCallback(async () => {
+    setNonSentLoading(true);
+    setNonSentError(null);
+    try {
+      const companies = await userService.getNonSentCompanies();
+      setNonSentCompanies(companies);
+      return companies;
+    } catch (err: any) {
+      setNonSentError(err.message);
+      throw err;
+    } finally {
+      setNonSentLoading(false);
+    }
+  }, [setNonSentCompanies, setNonSentLoading, setNonSentError]);
 
   /**
    * On mount: If authenticated, fetch profile
@@ -117,7 +135,7 @@ export function useAuth() {
         console.log("🔐 Logging in:", email);
         const result = await authService.login(email, password);
         console.log("✅ Login successful");
-        
+
         // After successful login, fetch full profile
         // (optional - will happen on next mount anyway)
         return result;
@@ -160,7 +178,7 @@ export function useAuth() {
       try {
         console.log("✏️ Updating credentials...");
         const result = await userService.updateCredentials(payload);
-        
+
         if (result.user) {
           setUser(result.user);
           console.log("✅ Credentials updated");
@@ -201,6 +219,7 @@ export function useAuth() {
     login,
     logout,
     fetchProfile,
+    fetchNonSentCompanies,
     updateCredentials,
     clearError,
   };

@@ -2,6 +2,7 @@ import { IUser, UpdateCredentialsPayload } from "@/src/types/user.types";
 import { PaginatedResponse } from "@/src/types/admin.types";
 import { IEmailLog, EmailLogFilters } from "@/src/types/email.types";
 import api from "@/src/lib/axios";
+import { ICompany } from "@/src/types/admin.types";
 
 // ─── User Service ─────────────────────────────────────────────────────────────
 
@@ -47,6 +48,13 @@ export const userService = {
   getSentEmailById: async (id: string): Promise<IEmailLog> => {
     const { data } = await api.get<{ data: IEmailLog }>(
       `/user/sentEmails/${id}`,
+    );
+    return data.data;
+  },
+
+  getNonSentCompanies: async (): Promise<ICompany[]> => {
+    const { data } = await api.get<{ data: ICompany[]; pagination: any }>(
+      "/companies/non-sent"
     );
     return data.data;
   },

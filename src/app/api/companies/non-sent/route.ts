@@ -17,8 +17,6 @@ import SentEmail from "@/src/models/SentEmailSchema";
 
 export const dynamic = "force-dynamic";
 
-const PAGE_LIMIT = 100;
-
 export async function GET(req: NextRequest) {
   try {
     // 1. Auth check
@@ -28,11 +26,6 @@ export async function GET(req: NextRequest) {
     }
 
     const userId = session.user.id;
-
-    // 2. Parse pagination query param
-    const { searchParams } = new URL(req.url);
-    const page = Math.max(1, parseInt(searchParams.get("page") ?? "1", 10));
-    const skip = (page - 1) * PAGE_LIMIT;
 
     await connectDB();
 
@@ -49,26 +42,22 @@ export async function GET(req: NextRequest) {
       ...(sentCompanyIds.length > 0 ? { _id: { $nin: sentCompanyIds } } : {}),
     };
 
-    const [companies, total] = await Promise.all([
-      Company.find(filter)
-        .select("_id name email category website location tags createdAt")
-        .sort({ createdAt: -1 })
-        .skip(skip)
-        .limit(PAGE_LIMIT)
-        .lean(),
-      Company.countDocuments(filter),
-    ]);
+    const companies = await Company.find(filter)
+      .select("_id name email category website location tags createdAt")
+      .sort({ createdAt: -1 })
+      .lean();
 
-    const totalPages = Math.ceil(total / PAGE_LIMIT);
+    const total = companies.length;
+
 
     return NextResponse.json({
       data: companies,
       pagination: {
-        page,
-        limit: PAGE_LIMIT,
+        page: 1,
+        limit: total,
         total,
-        totalPages,
-        hasNextPage: page < totalPages,
+        totalPages: 1,
+        hasNextPage: false,
       },
     });
   } catch (error) {

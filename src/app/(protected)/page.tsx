@@ -26,6 +26,7 @@ import { stripEmojis } from "@/src/utils/sanitization";
 import { SkeletonCard } from "@/src/components/ui/Skeleton";
 import { useAuth } from "@/src/Hooks/Useauth";
 import { useSentEmails } from "@/src/Hooks/useSentEmails";
+import { useCompanyStore } from "@/src/store/Companystore";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -47,6 +48,7 @@ export default function HomePage() {
   const { user } = useAuth();
   const hasSenderEmail = !!user?.senderEmail;
   const store = useEmailStore();
+  const { fetchNonSentCompanies } = useAuth();
 
   // ── Already-sent tracking ────────────────────────────────────────────────
   const { sentSet, markAsSent } = useSentEmails();
@@ -103,7 +105,7 @@ export default function HomePage() {
   useEffect(() => {
     const handler = (e: PromiseRejectionEvent) => { e.preventDefault(); };
     window.addEventListener("unhandledrejection", handler);
-    
+
     // Close dropdown on click outside
     const handleClickOutside = (event: MouseEvent) => {
       if (selectDropdownRef.current && !selectDropdownRef.current.contains(event.target as Node)) {
@@ -125,11 +127,11 @@ export default function HomePage() {
       isFetchingRef.current = true;
 
       if (append) setIsLoadingMore(true);
-      else        setIsFirstLoad(true);
+      else setIsFirstLoad(true);
 
       try {
         const res = await emailService.searchCompanies({
-          search:   debouncedSearch || undefined,
+          search: debouncedSearch || undefined,
           category: selectedCategories.length > 0 ? selectedCategories.join(",") : undefined,
           page,
           limit: PAGE_SIZE,
@@ -145,7 +147,7 @@ export default function HomePage() {
       } finally {
         isFetchingRef.current = false;
         if (append) setIsLoadingMore(false);
-        else        setIsFirstLoad(false);
+        else setIsFirstLoad(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -218,25 +220,36 @@ export default function HomePage() {
     setShowSelectDropdown(false);
   };
 
-  const handleSelectNonSent = () => {
-    const existingIds = new Set(selectedCompanies.map((c) => c._id));
-    const toAdd = companySearchResults.filter(
-      (c) => !sentSet.has(String(c._id)) && !existingIds.has(c._id)
-    );
-    store.setSelectedCompanies([...selectedCompanies, ...toAdd]);
+  const handleSelectNonSent = async () => {
+    const { nonSentCompanies, nonSentLoaded, nonSentLoading } = useCompanyStore.getState();
+
     setShowSelectDropdown(false);
-    if (toAdd.length === 0) {
-      toast.error("No non-sent companies in current list");
-    } else {
-      toast.success(`Selected ${toAdd.length} non-sent companies`);
+
+    let companies = nonSentCompanies;
+
+    if (!nonSentLoaded && !nonSentLoading) {
+      try {
+        companies = await fetchNonSentCompanies();
+      } catch {
+        toast.error("Failed to load non-sent companies");
+        return;
+      }
     }
+
+    if (companies.length === 0) {
+      toast.error("No non-sent companies found");
+      return;
+    }
+
+    store.setSelectedCompanies(companies);
+    toast.success(`Selected ${companies.length} non-sent companies`);
   };
 
   // ── Send (streaming) ────────────────────────────────────────────────────────
   const handleSend = useThrottle(async () => {
-    if (!subject.trim())               { toast.error("Please enter an email subject"); return; }
-    if (!emailBody.trim())             { toast.error("Please write an email body"); return; }
-    if (selectedCompanies.length === 0){ toast.error("Please select at least one company"); return; }
+    if (!subject.trim()) { toast.error("Please enter an email subject"); return; }
+    if (!emailBody.trim()) { toast.error("Please write an email body"); return; }
+    if (selectedCompanies.length === 0) { toast.error("Please select at least one company"); return; }
 
     clearState();
     // Reset progress state
@@ -247,7 +260,7 @@ export default function HomePage() {
     store.setIsSending(true);
 
     const formData = new FormData();
-    formData.append("subject",   subject.trim());
+    formData.append("subject", subject.trim());
     formData.append("emailBody", emailBody.trim());
     selectedCompanies.forEach((c) => formData.append("companyIds", c._id));
     attachments.forEach((f) => formData.append("attachments", f));
@@ -342,7 +355,7 @@ export default function HomePage() {
     const validFiles: File[] = [];
     Array.from(files).forEach((file) => {
       if (!ALLOWED_PDF_TYPES.includes(file.type)) { toast.error(`${file.name} is not a PDF.`); return; }
-      if (file.size > MAX_FILE_SIZE)               { toast.error(`${file.name} exceeds 5MB limit`); return; }
+      if (file.size > MAX_FILE_SIZE) { toast.error(`${file.name} exceeds 5MB limit`); return; }
       validFiles.push(file);
     });
     if (validFiles.length > 0) {
@@ -421,11 +434,10 @@ export default function HomePage() {
                 <button
                   key={cat}
                   onClick={() => toggleCategory(cat)}
-                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
-                    selectedCategories.includes(cat)
+                  className={`px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${selectedCategories.includes(cat)
                       ? "bg-amber-500 text-white border-amber-500"
                       : "bg-white border-slate-200 text-slate-600 hover:border-amber-300"
-                  }`}
+                    }`}
                 >
                   {cat}
                 </button>
@@ -442,15 +454,14 @@ export default function HomePage() {
                   ? ` / ${companySearchPagination.total} total`
                   : ""}
               </span>
-              
+
               <div className="relative" ref={selectDropdownRef}>
                 <button
                   onClick={() => setShowSelectDropdown(!showSelectDropdown)}
                   className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold
-                    border transition-all ${
-                      allCurrentSelected
-                        ? "bg-amber-500 text-white border-amber-500 hover:bg-amber-600"
-                        : "bg-white text-slate-600 border-slate-200 hover:border-amber-400 hover:text-amber-700"
+                    border transition-all ${allCurrentSelected
+                      ? "bg-amber-500 text-white border-amber-500 hover:bg-amber-600"
+                      : "bg-white text-slate-600 border-slate-200 hover:border-amber-400 hover:text-amber-700"
                     }`}
                 >
                   {allCurrentSelected ? <CheckSquare size={13} /> : <Square size={13} />}
@@ -514,11 +525,10 @@ export default function HomePage() {
                             ? store.removeSelectedCompany(c._id)
                             : store.addSelectedCompany(c);
                         }}
-                        className={`p-3.5 rounded-xl border cursor-pointer transition-all ${
-                          selected
+                        className={`p-3.5 rounded-xl border cursor-pointer transition-all ${selected
                             ? "bg-amber-50 border-amber-400 shadow-sm"
                             : "bg-white border-slate-200 hover:border-amber-300 hover:bg-amber-50/30"
-                        }`}
+                          }`}
                       >
                         {/* Name row + Already Sent badge */}
                         <div className="flex items-center justify-between gap-2">
@@ -650,8 +660,8 @@ export default function HomePage() {
                   </span>
                 </div>
                 <span className="text-sm font-black text-amber-600 bg-amber-50 px-3 py-1 rounded-full">
-                  {streamTotal > 0 
-                    ? `${Math.round((streamResults.length / streamTotal) * 100)}%` 
+                  {streamTotal > 0
+                    ? `${Math.round((streamResults.length / streamTotal) * 100)}%`
                     : "0%"}
                 </span>
               </div>
@@ -659,9 +669,8 @@ export default function HomePage() {
               {/* Progress bar container */}
               <div className="h-3 bg-slate-100 rounded-full overflow-hidden">
                 <div
-                  className={`h-full transition-all duration-700 ease-out rounded-full ${
-                    streamDone ? "bg-emerald-500" : "bg-gradient-to-r from-amber-400 to-amber-500"
-                  }`}
+                  className={`h-full transition-all duration-700 ease-out rounded-full ${streamDone ? "bg-emerald-500" : "bg-gradient-to-r from-amber-400 to-amber-500"
+                    }`}
                   style={{ width: `${streamTotal > 0 ? (streamResults.length / streamTotal) * 100 : 0}%` }}
                 />
               </div>
