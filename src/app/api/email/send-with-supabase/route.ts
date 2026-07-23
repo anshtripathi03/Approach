@@ -14,6 +14,7 @@ const ALLOWED_MIME_TYPES = ["application/pdf"];
 const DELAY_BETWEEN_EMAILS_MS = 5000;
 
 export const dynamic = "force-dynamic";
+export const maxDuration = 3000; // Allow up to 5 minutes for bulk email sends (Vercel Pro)
 
 // ─── Helper ──────────────────────────────────────────────────────────────────
 const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));

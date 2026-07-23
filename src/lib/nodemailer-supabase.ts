@@ -1,5 +1,41 @@
 import nodemailer from "nodemailer";
 
+// ─── HTML-safety helpers ──────────────────────────────────────────────────────
+
+/** Escape HTML-special characters so user text never breaks the template. */
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+/**
+ * Escape HTML entities AND convert `\n` to `<br>` so line breaks render
+ * correctly in every email client (Gmail strips `white-space: pre-wrap`).
+ */
+function escapeAndConvertNewlines(str: string): string {
+  return escapeHtml(str).replace(/\n/g, "<br>");
+}
+
+/**
+ * Produce a plain-text version of the body that will NOT trigger Gmail's
+ * "Show quoted text" collapse.  Rules:
+ *  - Strip any `>` at the start of lines (Gmail treats them as quoting)
+ *  - Collapse runs of 3+ blank lines into 2
+ *  - Trim trailing whitespace per line
+ */
+function stripForPlainText(raw: string): string {
+  return raw
+    .split("\n")
+    .map((line) => line.replace(/^>+\s?/, "").trimEnd())
+    .join("\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 interface SendEmailWithLinksOptions {
   to: string;
   subject: string;
@@ -138,10 +174,9 @@ function buildFinalHtml(
                       font-size: 26px;
                       line-height: 1.6;
                       color: #0f172a;
-                      white-space: pre-wrap;
                       word-break: break-word;
                       width: 100%;
-                    ">${bodyText}</div>
+                    ">${escapeAndConvertNewlines(bodyText)}</div>
                   </td>
                 </tr>
 
@@ -214,11 +249,13 @@ export async function sendEmailWithLinks(
     // one from the HTML template. The auto-generated text version of nested
     // tables can contain ">" characters that Gmail interprets as quoted content,
     // causing the entire email to collapse behind "Show quoted text".
+    // We run the raw body through stripForPlainText() to remove any leading ">"
+    // characters and collapse excessive blank lines.
     const info = await transporter.sendMail({
       from: fromHeader,
       to,
       subject,
-      text: html,
+      text: stripForPlainText(html),
       html: finalHtml,
     });
 
