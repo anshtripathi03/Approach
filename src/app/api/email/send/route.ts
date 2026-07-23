@@ -117,12 +117,18 @@ export async function POST(req: NextRequest) {
     }
 
     // ── 9. Send emails to all companies ───────────────────────────────────────
+    const cleanSenderName = (user.name || session.user?.name || "").trim().replace(/"/g, "");
+    const fromHeader = cleanSenderName
+      ? `"${cleanSenderName}" <${user.senderEmail}>`
+      : user.senderEmail;
+
     const settled = await Promise.allSettled(
       companies.map((company) =>
         transporter.sendMail({
-          from: `"${user.name}" <${user.senderEmail}>`,
+          from: fromHeader,
           to: company.email,
           subject: subject,
+          text: emailBody,
           html: emailBody,
         }),
       ),

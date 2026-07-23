@@ -7,6 +7,7 @@ interface SendEmailWithLinksOptions {
   companyName?: string;
   gmailUser: string;
   gmailPass: string;
+  senderName?: string;
   attachmentUrls?: Array<{
     filename: string;
     url: string;
@@ -116,7 +117,6 @@ function buildFinalHtml(
 </head>
 <body style="margin: 0; padding: 0; background-color: #ffffff; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 24px; line-height: 1.6; color: #0f172a;">
 
-  <!-- Outer wrapper -->
   <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%" style="background-color: #ffffff;">
     <tr>
       <td style="padding: 20px 0;">
@@ -125,7 +125,6 @@ function buildFinalHtml(
             <td style="padding: 0 16px;">
               <table role="presentation" cellspacing="0" cellpadding="0" border="0" width="100%">
 
-                <!-- Email body (Increased font size + Full Width) -->
                 <tr>
                   <td style="
                     font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
@@ -148,7 +147,6 @@ function buildFinalHtml(
 
                 ${attachmentsHtml}
 
-                <!-- Footer -->
                 <tr>
                   <td style="padding-top: 40px; border-top: 1px solid #f1f5f9;">
                     <p style="
@@ -186,6 +184,7 @@ export async function sendEmailWithLinks(
     companyName,
     gmailUser,
     gmailPass,
+    senderName,
     attachmentUrls = [],
   } = options;
 
@@ -206,10 +205,20 @@ export async function sendEmailWithLinks(
 
     const finalHtml = buildFinalHtml(html, gmailUser, attachmentUrls);
 
+    const cleanSenderName = senderName?.trim().replace(/"/g, "") || undefined;
+    const fromHeader = cleanSenderName
+      ? `"${cleanSenderName}" <${gmailUser}>`
+      : gmailUser;
+
+    // Provide an explicit plain-text body so nodemailer does NOT auto-generate
+    // one from the HTML template. The auto-generated text version of nested
+    // tables can contain ">" characters that Gmail interprets as quoted content,
+    // causing the entire email to collapse behind "Show quoted text".
     const info = await transporter.sendMail({
-      from: `"Approach" <${gmailUser}>`,
+      from: fromHeader,
       to,
       subject,
+      text: html,
       html: finalHtml,
     });
 
@@ -222,3 +231,4 @@ export async function sendEmailWithLinks(
     throw new Error(`Email delivery failed: ${error.message}`);
   }
 }
+

@@ -64,6 +64,7 @@ export async function POST(req: NextRequest) {
 
   const gmailUser = user.senderEmail;
   const gmailPass = decrypt(user.googleAppPassword);
+  const senderName = user.name || session.user?.name || undefined;
 
   // ─── PARSE FormData ─────────────────────────────────────────────────────────
   const formData = await req.formData();
@@ -182,6 +183,7 @@ export async function POST(req: NextRequest) {
               companyName: company.name,
               gmailUser,
               gmailPass,
+              senderName,
             });
 
             result = {
