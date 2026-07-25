@@ -11,20 +11,18 @@ import { decrypt } from "@/src/lib/encrypt";
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
 const ALLOWED_MIME_TYPES = ["application/pdf"];
-const DELAY_BETWEEN_EMAILS_MS = 5000;
 
 export const dynamic = "force-dynamic";
-export const maxDuration = 3000; // Allow up to 5 minutes for bulk email sends (Vercel Pro)
-
-// ─── Helper ──────────────────────────────────────────────────────────────────
-const delay = (ms: number) => new Promise((res) => setTimeout(res, ms));
-
-/** Encode an event as a newline-delimited JSON string */
-function encodeEvent(payload: object): Uint8Array {
-  return new TextEncoder().encode(JSON.stringify(payload) + "\n");
-}
+// No maxDuration needed — each request sends exactly ONE email and returns
+// immediately. The 8-second gap between emails lives entirely in the browser,
+// so Vercel's tiny computer is never held open between sends.
 
 // ─── POST ─────────────────────────────────────────────────────────────────────
+//
+// Sends ONE email to ONE company per request.
+// The frontend is responsible for looping through companies and waiting
+// 8 seconds between each call.
+//
 export async function POST(req: NextRequest) {
   // Instantiate Supabase client at request time
   const supabase = createClient(
@@ -71,7 +69,7 @@ export async function POST(req: NextRequest) {
   const formData = await req.formData();
   const subject = formData.get("subject") as string;
   const emailBody = formData.get("emailBody") as string;
-  const companyIds = formData.getAll("companyIds") as string[];
+  const companyId = formData.get("companyId") as string; // single company per request
   const fileEntries = formData.getAll("attachments") as File[];
 
   // ─── VALIDATION ─────────────────────────────────────────────────────────────
@@ -87,11 +85,11 @@ export async function POST(req: NextRequest) {
       headers: { "Content-Type": "application/json" },
     });
   }
-  if (!companyIds || companyIds.length === 0) {
-    return new Response(
-      JSON.stringify({ error: "At least one company is required" }),
-      { status: 400, headers: { "Content-Type": "application/json" } }
-    );
+  if (!companyId) {
+    return new Response(JSON.stringify({ error: "companyId is required" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
   }
 
   // ─── UPLOAD PDFs TO SUPABASE & GET SIGNED URLS ─────────────────────────────
@@ -150,134 +148,106 @@ export async function POST(req: NextRequest) {
     attachmentUrls.push({ filename: file.name, url: signedUrlData.signedUrl });
   }
 
-  // ─── FETCH COMPANIES ─────────────────────────────────────────────────────────
-  const companies = await Company.find({ _id: { $in: companyIds } }).lean();
+  // ─── FETCH COMPANY ───────────────────────────────────────────────────────────
+  const company = await Company.findById(companyId).lean();
 
-  if (companies.length === 0) {
+  if (!company) {
     return new Response(
-      JSON.stringify({ error: "No valid companies found" }),
+      JSON.stringify({ error: "Company not found" }),
       { status: 404, headers: { "Content-Type": "application/json" } }
     );
   }
 
-  // ─── STREAM: Send emails one-by-one, emit NDJSON events ────────────────────
-  const deliveryResults: any[] = [];
+  // ─── SEND THE SINGLE EMAIL ───────────────────────────────────────────────────
+  try {
+    const messageId = await sendEmailWithLinks({
+      to: company.email,
+      subject: subject.trim(),
+      html: emailBody.trim(),
+      attachmentUrls,
+      companyName: company.name,
+      gmailUser,
+      gmailPass,
+      senderName,
+    });
 
-  const stream = new ReadableStream({
-    async start(controller) {
-      try {
-        // Event 1 — total count so the UI can show a progress bar
-        controller.enqueue(
-          encodeEvent({ type: "start", total: companies.length })
-        );
+    // ─── LOG TO DB ────────────────────────────────────────────────────────────
+    try {
+      await EmailLog.create({
+        sentBy: user._id,
+        senderEmail: gmailUser,
+        subject: subject.trim(),
+        body: emailBody.trim(),
+        companies: [company._id],
+        deliveryResults: [
+          {
+            company: company._id,
+            companyEmail: company.email,
+            companyName: company.name,
+            status: "sent",
+            messageId,
+          },
+        ],
+        totalTargeted: 1,
+        totalSent: 1,
+        totalFailed: 0,
+        status: "completed",
+        attachmentUrls,
+        sentAt: new Date(),
+      });
+    } catch (logErr) {
+      // Non-fatal — don't fail the response if logging fails
+      console.error("❌ EmailLog save error:", logErr);
+    }
 
-        for (let i = 0; i < companies.length; i++) {
-          const company = companies[i];
+    return new Response(
+      JSON.stringify({
+        success: true,
+        companyId: String(company._id),
+        companyEmail: company.email,
+        companyName: company.name,
+        messageId,
+      }),
+      { status: 200, headers: { "Content-Type": "application/json" } }
+    );
+  } catch (err: any) {
+    // ─── LOG FAILURE TO DB ────────────────────────────────────────────────────
+    try {
+      await EmailLog.create({
+        sentBy: user._id,
+        senderEmail: gmailUser,
+        subject: subject.trim(),
+        body: emailBody.trim(),
+        companies: [company._id],
+        deliveryResults: [
+          {
+            company: company._id,
+            companyEmail: company.email,
+            companyName: company.name,
+            status: "failed",
+            errorMessage: err.message || "Unknown error",
+          },
+        ],
+        totalTargeted: 1,
+        totalSent: 0,
+        totalFailed: 1,
+        status: "all_failed",
+        attachmentUrls,
+        sentAt: new Date(),
+      });
+    } catch (logErr) {
+      console.error("❌ EmailLog save error:", logErr);
+    }
 
-          let result: any;
-          try {
-            const messageId = await sendEmailWithLinks({
-              to: company.email,
-              subject: subject.trim(),
-              html: emailBody.trim(),
-              attachmentUrls,
-              companyName: company.name,
-              gmailUser,
-              gmailPass,
-              senderName,
-            });
-
-            result = {
-              company: company._id,
-              companyEmail: company.email,
-              companyName: company.name,
-              status: "sent" as const,
-              messageId,
-            };
-          } catch (err: any) {
-            result = {
-              company: company._id,
-              companyEmail: company.email,
-              companyName: company.name,
-              status: "failed" as const,
-              errorMessage: err.message || "Unknown error",
-            };
-          }
-
-          deliveryResults.push(result);
-
-          // Event 2 — one result per email
-          controller.enqueue(
-            encodeEvent({ type: "result", index: i, data: result })
-          );
-
-          // 5-second delay before next email (skip after last)
-          if (i < companies.length - 1) {
-            await delay(DELAY_BETWEEN_EMAILS_MS);
-          }
-        }
-
-        // ─── Save log to DB ───────────────────────────────────────────────────
-        const totalSent = deliveryResults.filter(
-          (r) => r.status === "sent"
-        ).length;
-        const totalFailed = deliveryResults.filter(
-          (r) => r.status === "failed"
-        ).length;
-
-        let status: "completed" | "partial" | "all_failed";
-        if (totalFailed === 0) status = "completed";
-        else if (totalSent === 0) status = "all_failed";
-        else status = "partial";
-
-        try {
-          await EmailLog.create({
-            sentBy: session.user.id,
-            senderEmail: gmailUser,
-            subject: subject.trim(),
-            body: emailBody.trim(),
-            companies: companyIds,
-            deliveryResults,
-            totalTargeted: companies.length,
-            totalSent,
-            totalFailed,
-            status,
-            attachmentUrls,
-            sentAt: new Date(),
-          });
-        } catch (logErr) {
-          console.error("❌ EmailLog save error:", logErr);
-        }
-
-        // Event 3 — done summary
-        controller.enqueue(
-          encodeEvent({
-            type: "done",
-            summary: {
-              totalTargeted: companies.length,
-              totalSent,
-              totalFailed,
-              status,
-            },
-            deliveryResults,
-          })
-        );
-      } catch (err: any) {
-        controller.enqueue(
-          encodeEvent({ type: "error", message: err.message || "Server error" })
-        );
-      } finally {
-        controller.close();
-      }
-    },
-  });
-
-  return new Response(stream, {
-    headers: {
-      "Content-Type": "application/x-ndjson",
-      "Transfer-Encoding": "chunked",
-      "Cache-Control": "no-cache",
-      "X-Accel-Buffering": "no", // disable Nginx/Vercel proxy buffering
-    },
-  });
+    return new Response(
+      JSON.stringify({
+        success: false,
+        companyId: String(company._id),
+        companyEmail: company.email,
+        companyName: company.name,
+        error: err.message || "Email delivery failed",
+      }),
+      { status: 500, headers: { "Content-Type": "application/json" } }
+    );
+  }
 }

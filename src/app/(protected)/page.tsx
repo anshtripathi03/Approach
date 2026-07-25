@@ -245,95 +245,111 @@ export default function HomePage() {
     toast.success(`Selected ${companies.length} non-sent companies`);
   };
 
-  // ── Send (streaming) ────────────────────────────────────────────────────────
+  // ── Send: one API call per company, 8-second gap between each ───────────────
+  //
+  // The server receives one request, sends one email, and returns immediately.
+  // The 8-second pause happens HERE (in the browser) — Vercel's tiny computer
+  // is completely freed between sends. No maxDuration problem whatsoever.
+  //
   const handleSend = useThrottle(async () => {
     if (!subject.trim()) { toast.error("Please enter an email subject"); return; }
     if (!emailBody.trim()) { toast.error("Please write an email body"); return; }
     if (selectedCompanies.length === 0) { toast.error("Please select at least one company"); return; }
 
     clearState();
-    // Reset progress state
     setStreamResults([]);
-    setStreamTotal(0);
+    setStreamTotal(selectedCompanies.length);
     setStreamDone(false);
     setShowProgress(true);
     store.setIsSending(true);
 
-    const formData = new FormData();
-    formData.append("subject", subject.trim());
-    formData.append("emailBody", emailBody.trim());
-    selectedCompanies.forEach((c) => formData.append("companyIds", c._id));
-    attachments.forEach((f) => formData.append("attachments", f));
+    const DELAY_MS = 8000; // 8-second gap between each email (browser-side)
+    let totalSent = 0;
+    let totalFailed = 0;
+    const results: any[] = [];
 
-    try {
-      const response = await fetch("/api/email/send-with-supabase", {
-        method: "POST",
-        body: formData,
-      });
+    // Upload attachments once — we pass the same File objects to every request
+    // (the API uploads them to Supabase per call, so signed URLs are fresh each time)
 
-      if (!response.ok || !response.body) {
-        const errJson = await response.json().catch(() => ({}));
-        throw new Error(errJson.error || "Failed to send emails");
-      }
+    for (let i = 0; i < selectedCompanies.length; i++) {
+      const company = selectedCompanies[i];
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const formData = new FormData();
+      formData.append("subject", subject.trim());
+      formData.append("emailBody", emailBody.trim());
+      formData.append("companyId", company._id);          // single company per request
+      attachments.forEach((f) => formData.append("attachments", f));
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
+      let result: any;
+      try {
+        const response = await fetch("/api/email/send-with-supabase", {
+          method: "POST",
+          body: formData,
+        });
 
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
-        buffer = lines.pop() ?? ""; // keep incomplete line in buffer
+        const json = await response.json();
 
-        for (const line of lines) {
-          if (!line.trim()) continue;
-          try {
-            const event = JSON.parse(line);
-
-            if (event.type === "start") {
-              setStreamTotal(event.total);
-            }
-
-            if (event.type === "result") {
-              setStreamResults((prev) => [...prev, event.data]);
-              if (event.data.status === "sent") {
-                markAsSent(String(event.data.company));
-              }
-            }
-
-            if (event.type === "done") {
-              setStreamDone(true);
-              store.setSendResult({
-                success: true,
-                summary: event.summary,
-                deliveryResults: event.deliveryResults,
-              });
-              store.clearCompose();
-              setAttachments([]);
-              toast.success(
-                `Sent to ${event.summary.totalSent} / ${event.summary.totalTargeted} company(ies)!`
-              );
-            }
-
-            if (event.type === "error") {
-              throw new Error(event.message);
-            }
-          } catch (parseErr) {
-            // skip malformed lines
-          }
+        if (response.ok && json.success) {
+          result = {
+            company: company._id,
+            companyEmail: company.email,
+            companyName: company.name,
+            status: "sent",
+            messageId: json.messageId,
+          };
+          totalSent++;
+          markAsSent(String(company._id));
+        } else {
+          result = {
+            company: company._id,
+            companyEmail: company.email,
+            companyName: company.name,
+            status: "failed",
+            errorMessage: json.error || "Unknown error",
+          };
+          totalFailed++;
         }
+      } catch (err: any) {
+        result = {
+          company: company._id,
+          companyEmail: company.email,
+          companyName: company.name,
+          status: "failed",
+          errorMessage: err.message || "Network error",
+        };
+        totalFailed++;
       }
-    } catch (err: any) {
-      const msg = err.message || "Failed to send emails";
-      store.setSendError(msg);
-      toast.error(msg);
-      setShowProgress(false);
-    } finally {
-      store.setIsSending(false);
+
+      results.push(result);
+      setStreamResults((prev) => [...prev, result]);
+
+      // Wait 8 seconds before sending the next email (skip after last)
+      if (i < selectedCompanies.length - 1) {
+        await new Promise((res) => setTimeout(res, DELAY_MS));
+      }
     }
+
+    // ── All done ─────────────────────────────────────────────────────────────
+    setStreamDone(true);
+    store.setSendResult({
+      success: true,
+      summary: {
+        totalTargeted: selectedCompanies.length,
+        totalSent,
+        totalFailed,
+        status:
+          totalFailed === 0
+            ? "completed"
+            : totalSent === 0
+            ? "all_failed"
+            : "partial",
+      },
+      deliveryResults: results,
+    });
+    store.clearCompose();
+    setAttachments([]);
+    store.setIsSending(false);
+    toast.success(`Sent to ${totalSent} / ${selectedCompanies.length} company(ies)!`);
   }, 2000);
 
   // ── Category toggle ─────────────────────────────────────────────────────────
