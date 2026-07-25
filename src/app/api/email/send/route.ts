@@ -122,14 +122,27 @@ export async function POST(req: NextRequest) {
       ? `"${cleanSenderName}" <${user.senderEmail}>`
       : user.senderEmail;
 
+    // Wrap the body in a minimal, personal-looking HTML shell.
+    // Large font sizes, nested tables, or branding footers all trigger spam.
+    const buildHtml = (body: string) => `<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="UTF-8" /></head>
+<body style="margin:0;padding:0;background:#ffffff;font-family:Arial,sans-serif;font-size:15px;line-height:1.6;color:#202124;">
+  <div style="max-width:680px;padding:8px 16px;font-size:15px;line-height:1.6;color:#202124;word-break:break-word;">
+    ${body.replace(/\n/g, "<br>")}
+  </div>
+</body>
+</html>`;
+
     const settled = await Promise.allSettled(
       companies.map((company) =>
         transporter.sendMail({
           from: fromHeader,
           to: company.email,
+          replyTo: fromHeader,   // tells spam filters this is a real 2-way email
           subject: subject,
-          text: emailBody,
-          html: emailBody,
+          text: emailBody,       // explicit plain-text prevents Gmail "Show quoted text"
+          html: buildHtml(emailBody),
         }),
       ),
     );
