@@ -216,7 +216,7 @@ export default function AIImportPage() {
   const [batchCurrent, setBatchCurrent] = useState(0);
   const [batchTotal, setBatchTotal] = useState(0);
 
-  const BATCH_SIZE = 15;
+  const BATCH_SIZE = 20;
   const MAX_FAILED_BATCHES = 5;
 
   // ── Parse with AI — batched 25 lines at a time ─────────────────────────────
@@ -267,10 +267,38 @@ export default function AIImportPage() {
           const data: ParseResponse & { error?: string; retryAfterSeconds?: number } = await res.json();
 
           if (!res.ok) {
-            const isRateLimit = res.status === 429 || data.error?.toLowerCase().includes("too many requests");
-            
-            if (isRateLimit) {
-              const waitTime = data.retryAfterSeconds ?? 5;
+            // Our own short-lived internal rate limiter (5 calls/min,
+            // src/lib/rateLimiter.ts) always uses this exact message — safe
+            // to actually wait out. Any OTHER 429 is a provider-level
+            // free-tier quota exhaustion (OpenRouter daily cap, Gemini quota,
+            // etc.), which can carry a retryAfterSeconds of several HOURS and
+            // will fail identically on every remaining batch, so it must
+            // stop immediately rather than being blindly awaited.
+            const isOurRateLimit =
+              res.status === 429 && data.error?.toLowerCase().includes("too many requests");
+            const isProviderQuotaExhausted = res.status === 429 && !isOurRateLimit;
+
+            if (res.status === 402 || isProviderQuotaExhausted) {
+              // Free-tier exhausted account-wide (payment-required or a
+              // provider quota) — every remaining batch would fail
+              // identically, so stop immediately instead of burning through
+              // the rest of the batches one by one.
+              setParseError(
+                `❌ ${data.error ?? "OpenRouter's free tier is exhausted."} ` +
+                `${allRecords.length} records were recovered before the stop.`
+              );
+              dispatch({ type: "SET_ROWS", rows: toRows(allRecords) });
+              setSkipped(allSkipped);
+              setIsParsing(false);
+              setBatchCurrent(0);
+              setBatchTotal(0);
+              return;
+            }
+
+            if (isOurRateLimit) {
+              // Hard safety cap regardless of what the server reports — never
+              // let a single retry wait block the UI for more than a minute.
+              const waitTime = Math.min(data.retryAfterSeconds ?? 5, 60);
               if (attempt < MAX_BATCH_ATTEMPTS) {
                 console.warn(`[AI-IMPORT] Rate limited. Waiting ${waitTime}s before retry ${attempt + 1}...`);
                 await new Promise((r) => setTimeout(r, waitTime * 1000));
@@ -325,6 +353,17 @@ export default function AIImportPage() {
           console.error(`[AI-IMPORT] ${skippedBatches} batches failed — aborting the rest of the import`);
           break;
         }
+      }
+
+      // Small fixed gap between successive calls — just enough to avoid
+      // hammering the API back-to-back, not a rate-limit workaround. The
+      // 3.5s pause here previously was tuned for OpenRouter's ~20 req/min
+      // free-tier cap; Gemini's free tier has more headroom for flash-lite,
+      // so this is intentionally much shorter now. If AI_PROVIDER is
+      // switched back to openrouter and 429s return, bump this back up
+      // (or make it provider-aware) rather than removing it entirely.
+      if (i < batches.length - 1) {
+        await new Promise((r) => setTimeout(r, 300));
       }
     }
 
@@ -531,7 +570,7 @@ export default function AIImportPage() {
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 text-center">
-                  Each batch sends 15 emails to AI — please wait
+                  Each batch sends 20 emails to AI — please wait
                 </p>
               </div>
             )}
