@@ -64,3 +64,20 @@ export const SendEmailSchema = z.object({
     .refine((val) => !containsEmoji(val), "Emojis are not allowed in the email body"),
   companyIds: z.array(z.string()).min(1, "Select at least one company"),
 });
+
+// Single-company variant used by the attachment-download-link sender
+// (src/app/api/email/send-with-supabase/route.ts) — same content rules as
+// SendEmailSchema but targets one companyId instead of a batch.
+export const SendEmailWithAttachmentSchema = z.object({
+  subject: z
+    .string()
+    .min(1, "Subject is required")
+    .max(150, "Subject too long")
+    .refine((val) => !containsEmoji(val), "Emojis are not allowed in the subject"),
+  emailBody: z
+    .string()
+    .min(10, "Email body too short")
+    .max(10000, "Email body too long (max 10,000 chars)")
+    .refine((val) => !containsEmoji(val), "Emojis are not allowed in the email body"),
+  companyId: z.string().min(1, "companyId is required"),
+});

@@ -49,27 +49,43 @@ export async function middleware(req: NextRequest) {
         : "next-auth.session-token",
   });
 
-  console.log("🔑 Middleware token:", JSON.stringify(token, null, 2));
   const isLoggedIn = !!token;
   const isAdmin = token?.role === "admin";
+
+  // ── Standard security headers — applied to every response below ─────────
+  function withSecurityHeaders(response: NextResponse): NextResponse {
+    response.headers.set("X-Content-Type-Options", "nosniff");
+    response.headers.set("X-Frame-Options", "DENY");
+    response.headers.set("X-XSS-Protection", "1; mode=block");
+    response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+    if (process.env.NODE_ENV === "production") {
+      response.headers.set(
+        "Strict-Transport-Security",
+        "max-age=31536000; includeSubDomains; preload",
+      );
+    }
+    return response;
+  }
 
   // ── 1. Already logged in → redirect away from auth pages ─────────────────
   if (pathname.startsWith("/authpage") || pathname.startsWith("/login")) {
     if (isLoggedIn) {
-      return NextResponse.redirect(new URL("/profile", req.url));
+      return withSecurityHeaders(NextResponse.redirect(new URL("/profile", req.url)));
     }
-    return NextResponse.next();
+    return withSecurityHeaders(NextResponse.next());
   }
 
   // ── 2. Admin-only pages ───────────────────────────────────────────────────
   if (pathname.startsWith("/admin")) {
     if (!isLoggedIn) {
-      return NextResponse.redirect(new URL("/authpage", req.url));
+      return withSecurityHeaders(NextResponse.redirect(new URL("/authpage", req.url)));
     }
     if (!isAdmin) {
-      return NextResponse.redirect(new URL("/profile?error=forbidden", req.url));
+      return withSecurityHeaders(
+        NextResponse.redirect(new URL("/profile?error=forbidden", req.url)),
+      );
     }
-    return NextResponse.next();
+    return withSecurityHeaders(NextResponse.next());
   }
 
   // ── 3. Protected user pages ───────────────────────────────────────────────
@@ -77,20 +93,22 @@ export async function middleware(req: NextRequest) {
     if (!isLoggedIn) {
       const loginUrl = new URL("/authpage", req.url);
       loginUrl.searchParams.set("callbackUrl", pathname);
-      return NextResponse.redirect(loginUrl);
+      return withSecurityHeaders(NextResponse.redirect(loginUrl));
     }
-    return NextResponse.next();
+    return withSecurityHeaders(NextResponse.next());
   }
 
   // ── 4. Admin-only API routes ──────────────────────────────────────────────
   if (pathname.startsWith("/api/admin")) {
     if (!isLoggedIn) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return withSecurityHeaders(NextResponse.json({ error: "Unauthorized" }, { status: 401 }));
     }
     if (!isAdmin) {
-      return NextResponse.json({ error: "Forbidden: Admins only" }, { status: 403 });
+      return withSecurityHeaders(
+        NextResponse.json({ error: "Forbidden: Admins only" }, { status: 403 }),
+      );
     }
-    return NextResponse.next();
+    return withSecurityHeaders(NextResponse.next());
   }
 
   // ── 5. Protected API routes ───────────────────────────────────────────────
@@ -101,25 +119,13 @@ export async function middleware(req: NextRequest) {
     pathname.startsWith("/api/email/")
   ) {
     if (!isLoggedIn) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+      return withSecurityHeaders(NextResponse.json({ error: "Unauthorized" }, { status: 401 }));
     }
-    return NextResponse.next();
+    return withSecurityHeaders(NextResponse.next());
   }
 
-  // ── 6. Standard security headers ─────────────────────────────────────────
-  const response = NextResponse.next();
-  response.headers.set("X-Content-Type-Options", "nosniff");
-  response.headers.set("X-Frame-Options", "DENY");
-  response.headers.set("X-XSS-Protection", "1; mode=block");
-  response.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
-  if (process.env.NODE_ENV === "production") {
-    response.headers.set(
-      "Strict-Transport-Security",
-      "max-age=31536000; includeSubDomains; preload",
-    );
-  }
-
-  return response;
+  // ── 6. Everything else ────────────────────────────────────────────────────
+  return withSecurityHeaders(NextResponse.next());
 }
 
 export const config = {

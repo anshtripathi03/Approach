@@ -57,3 +57,48 @@ export function rateLimitResponse(retryAfter: number) {
     }
   );
 }
+
+/**
+ * In-memory idempotency-key store.
+ * Key: caller-supplied idempotency key (namespaced per route)
+ * Value: the JSON-serializable result to replay + its expiry timestamp
+ */
+interface IdempotencyEntry {
+  result: unknown;
+  status: number;
+  expiresAt: number;
+}
+
+const idempotencyStore = new Map<string, IdempotencyEntry>();
+const IDEMPOTENCY_TTL_MS = 5 * 60_000; // 5 minutes
+
+function pruneExpiredIdempotencyKeys(now: number) {
+  Array.from(idempotencyStore.entries()).forEach(([key, entry]) => {
+    if (entry.expiresAt <= now) idempotencyStore.delete(key);
+  });
+}
+
+/**
+ * Returns the cached response for this idempotency key if it was already
+ * processed within the TTL window, otherwise null.
+ */
+export function getIdempotentResult(key: string): { result: unknown; status: number } | null {
+  const now = Date.now();
+  pruneExpiredIdempotencyKeys(now);
+
+  const entry = idempotencyStore.get(key);
+  if (!entry || entry.expiresAt <= now) return null;
+  return { result: entry.result, status: entry.status };
+}
+
+/**
+ * Records the result of processing an idempotency key so replays within
+ * the TTL window return the same response instead of re-executing.
+ */
+export function storeIdempotentResult(key: string, result: unknown, status: number) {
+  idempotencyStore.set(key, {
+    result,
+    status,
+    expiresAt: Date.now() + IDEMPOTENCY_TTL_MS,
+  });
+}

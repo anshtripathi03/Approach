@@ -8,8 +8,11 @@ import { createClient } from "@supabase/supabase-js";
 import { connectDB } from "@/src/lib/db";
 import UserModel from "@/src/models/UserSchema";
 import { decrypt } from "@/src/lib/encrypt";
+import { rateLimiter, rateLimitResponse } from "@/src/lib/rateLimiter";
+import { SendEmailWithAttachmentSchema } from "@/src/lib/validations";
 
 const MAX_FILE_SIZE = 5 * 1024 * 1024;
+const MAX_ATTACHMENTS = 5;
 const ALLOWED_MIME_TYPES = ["application/pdf"];
 
 export const dynamic = "force-dynamic";
@@ -37,6 +40,17 @@ export async function POST(req: NextRequest) {
       status: 401,
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  // ─── RATE LIMIT ─────────────────────────────────────────────────────────────
+  // This endpoint sends one email per call from a frontend loop (one call per
+  // company, ~8s apart), so the cap is generous compared to the bulk sender.
+  const rl = rateLimiter(`send-attachment-email-${session.user.email}`, {
+    limit: 100,
+    windowMs: 3600_000,
+  });
+  if (!rl.success) {
+    return rateLimitResponse(rl.retryAfter);
   }
 
   // ─── FETCH USER GMAIL CREDENTIALS ──────────────────────────────────────────
@@ -73,23 +87,23 @@ export async function POST(req: NextRequest) {
   const fileEntries = formData.getAll("attachments") as File[];
 
   // ─── VALIDATION ─────────────────────────────────────────────────────────────
-  if (!subject?.trim()) {
-    return new Response(JSON.stringify({ error: "Subject is required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+  const validation = SendEmailWithAttachmentSchema.safeParse({
+    subject,
+    emailBody,
+    companyId,
+  });
+  if (!validation.success) {
+    return new Response(
+      JSON.stringify({ error: validation.error.issues[0].message }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
   }
-  if (!emailBody?.trim()) {
-    return new Response(JSON.stringify({ error: "Email body is required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-  if (!companyId) {
-    return new Response(JSON.stringify({ error: "companyId is required" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
+
+  if (fileEntries.length > MAX_ATTACHMENTS) {
+    return new Response(
+      JSON.stringify({ error: `Cannot attach more than ${MAX_ATTACHMENTS} files` }),
+      { status: 400, headers: { "Content-Type": "application/json" } },
+    );
   }
 
   // ─── UPLOAD PDFs TO SUPABASE & GET SIGNED URLS ─────────────────────────────

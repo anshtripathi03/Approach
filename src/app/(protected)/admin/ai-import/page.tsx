@@ -216,7 +216,8 @@ export default function AIImportPage() {
   const [batchCurrent, setBatchCurrent] = useState(0);
   const [batchTotal, setBatchTotal] = useState(0);
 
-  const BATCH_SIZE = 25;
+  const BATCH_SIZE = 15;
+  const MAX_FAILED_BATCHES = 5;
 
   // ── Parse with AI — batched 25 lines at a time ─────────────────────────────
   const handleParse = useCallback(async () => {
@@ -246,6 +247,7 @@ export default function AIImportPage() {
     const allSkipped: SkippedRecord[] = [];
     const MAX_BATCH_ATTEMPTS = 3;
     let skippedBatches = 0;
+    let hardAborted = false;
 
     for (let i = 0; i < batches.length; i++) {
       setBatchCurrent(i + 1);
@@ -317,10 +319,21 @@ export default function AIImportPage() {
       if (!batchSuccess) {
         skippedBatches++;
         console.warn(`[AI-IMPORT] Skipping batch ${i + 1}/${batches.length} after ${MAX_BATCH_ATTEMPTS} failed attempts`);
+
+        if (skippedBatches >= MAX_FAILED_BATCHES) {
+          hardAborted = true;
+          console.error(`[AI-IMPORT] ${skippedBatches} batches failed — aborting the rest of the import`);
+          break;
+        }
       }
     }
 
-    if (skippedBatches > 0) {
+    if (hardAborted) {
+      setParseError(
+        `❌ Import aborted: ${skippedBatches} batches failed in a row. ` +
+        `${allRecords.length} records were recovered before the abort — check your input or try again shortly.`
+      );
+    } else if (skippedBatches > 0) {
       setParseError(
         `⚠️ ${skippedBatches} batch${skippedBatches > 1 ? "es" : ""} skipped after ${MAX_BATCH_ATTEMPTS} failed attempts each. ` +
         `${allRecords.length} records were still imported successfully.`
@@ -353,9 +366,17 @@ export default function AIImportPage() {
     }));
 
     try {
+      const idempotencyKey =
+        typeof crypto !== "undefined" && "randomUUID" in crypto
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
       const res = await fetch("/api/admin/ai-import/save", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "Idempotency-Key": idempotencyKey,
+        },
         body: JSON.stringify({ records }),
       });
 
@@ -411,7 +432,7 @@ export default function AIImportPage() {
             <h1 className="text-2xl font-bold text-slate-900">AI Email Importer</h1>
           </div>
           <p className="text-sm text-slate-400 ml-12">
-            Paste raw emails — Gemini structures them into your Company database
+            Paste raw emails — AI structures them into your Company database
           </p>
         </div>
 
@@ -433,7 +454,7 @@ export default function AIImportPage() {
             <div className="flex items-center justify-between mb-2">
               <div className="flex items-center gap-2 font-semibold text-yellow-800">
                 <AlertTriangle size={15} />
-                {skipped.length} record{skipped.length !== 1 ? "s" : ""} skipped by Gemini
+                {skipped.length} record{skipped.length !== 1 ? "s" : ""} skipped by AI
               </div>
               <button onClick={() => setSkippedDismissed(true)}>
                 <X size={14} className="text-yellow-500 hover:text-yellow-700" />
@@ -510,7 +531,7 @@ export default function AIImportPage() {
                   />
                 </div>
                 <p className="text-[11px] text-slate-400 text-center">
-                  Each batch sends 25 emails to AI — please wait
+                  Each batch sends 15 emails to AI — please wait
                 </p>
               </div>
             )}
