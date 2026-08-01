@@ -97,7 +97,12 @@ export function useAuth() {
   useEffect(() => {
     if (isAuthenticated && !user) {
       console.log("🚀 Auto-fetching profile on mount");
-      fetchProfile();
+      // fetchProfile() rethrows after recording the error in the store (so
+      // callers like login/register can react to it) — but this mount-time
+      // call is fire-and-forget, so an uncaught rethrow here becomes an
+      // unhandled promise rejection that crashes to the Next.js dev overlay.
+      // The error is already captured via setError above; nothing more to do.
+      fetchProfile().catch(() => {});
     }
   }, [isAuthenticated, user, fetchProfile]);
 
