@@ -31,7 +31,7 @@ export async function PUT(req: NextRequest) {
     const body = await req.json();
     const updateSchema = z.object({
       senderEmail: z.string().email().regex(/@gmail\.com$/, "Only Gmail supported").optional(),
-      googleAppPassword: z.string().length(16).optional(),
+      googleAppPassword: z.string().optional(),
     }).refine(data => data.senderEmail || data.googleAppPassword, {
       message: "Provide at least senderEmail or googleAppPassword",
     });
